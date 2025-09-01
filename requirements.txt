@@ -7,3 +7,4 @@ python-dotenv==1.0.1
 gunicorn==22.0.0
 onnxruntime==1.16.0
 requests==2.32.0
+gdown==4.7.1
