@@ -1295,7 +1295,7 @@ def logout():
 def metrics_data():
     data = compute_metrics()
     recent = list(metrics_events.find({}, {"_id": 0}).sort("ts", -1).limit(200))
-            normalized_recent = []
+    normalized_recent = []
     for r in recent:
         if isinstance(r.get("ts"), datetime):
             r["ts"] = r["ts"].isoformat()
