@@ -88,12 +88,30 @@ def ensure_models_downloaded():
 # MongoDB Connection
 try:
     mongo_uri = os.getenv('MONGO_URI', 'mongodb://localhost:27017/')
-    client = MongoClient(mongo_uri)
+    
+    # Enhanced SSL configuration for MongoDB Atlas on Render
+    if 'mongodb+srv://' in mongo_uri or 'mongodb.net' in mongo_uri:
+        client = MongoClient(
+            mongo_uri,
+            ssl=True,
+            ssl_cert_reqs='CERT_NONE',
+            serverSelectionTimeoutMS=10000,
+            connectTimeoutMS=20000,
+            socketTimeoutMS=20000,
+            maxPoolSize=10,
+            retryWrites=True
+        )
+    else:
+        client = MongoClient(mongo_uri)
+    
+    # Test the connection
+    client.admin.command('ping')
+    
     db = client['face_attendance_system']
     students_collection = db['students']
-    teachers_collection = db['teachers'] # New collection for teachers
+    teachers_collection = db['teachers']
     attendance_collection = db['attendance']
-    metrics_events = db['metrics_events'] # persisted metrics
+    metrics_events = db['metrics_events']
 
     # Indexes
     students_collection.create_index([("student_id", pymongo.ASCENDING)], unique=True)
