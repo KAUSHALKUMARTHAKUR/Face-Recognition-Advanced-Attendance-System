@@ -89,17 +89,17 @@ def ensure_models_downloaded():
 try:
     mongo_uri = os.getenv('MONGO_URI', 'mongodb://localhost:27017/')
     
-    # Enhanced SSL configuration for MongoDB Atlas on Render
+    # Fixed SSL configuration for MongoDB Atlas on Render
     if 'mongodb+srv://' in mongo_uri or 'mongodb.net' in mongo_uri:
         client = MongoClient(
             mongo_uri,
-            ssl=True,
-            ssl_cert_reqs='CERT_NONE',
             serverSelectionTimeoutMS=10000,
             connectTimeoutMS=20000,
             socketTimeoutMS=20000,
             maxPoolSize=10,
-            retryWrites=True
+            retryWrites=True,
+            tls=True,
+            tlsAllowInvalidCertificates=True
         )
     else:
         client = MongoClient(mongo_uri)
@@ -128,6 +128,11 @@ try:
     print("MongoDB connection successful")
 except Exception as e:
     print(f"MongoDB connection error: {e}")
+    # Initialize as None to prevent NameError - you can add fallback logic here
+    students_collection = None
+    teachers_collection = None  
+    attendance_collection = None
+    metrics_events = None
 
 # Download models on startup
 print("Ensuring all models are downloaded...")
