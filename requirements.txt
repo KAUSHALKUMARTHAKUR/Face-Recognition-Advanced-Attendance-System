@@ -2,6 +2,7 @@ Flask==2.3.3
 pymongo==4.5.0
 opencv-python-headless==4.8.1.78
 numpy==1.24.3
+--find-links https://github.com/jloh/dlib-wheels/releases/expanded_assets/v19.24.2
 dlib==19.24.2
 imutils==0.5.4
 onnxruntime==1.15.1
