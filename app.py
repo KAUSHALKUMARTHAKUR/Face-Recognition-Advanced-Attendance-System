@@ -24,7 +24,7 @@ from dotenv import load_dotenv
 
 import numpy as np
 
-import dlib
+import face_recognition
 
 import cv2
 
@@ -76,11 +76,8 @@ app.secret_key = os.urandom(24)
 # Google Drive Model URLs - Replace these with your actual Google Drive file IDs
 GOOGLE_DRIVE_MODELS = {
     'yolov5s-face': os.getenv('YOLO_MODEL_DRIVE_ID', 'YOUR_YOLO_MODEL_FILE_ID'),
-    'anti-spoof': os.getenv('ANTISPOOF_MODEL_DRIVE_ID', 'YOUR_ANTISPOOF_MODEL_FILE_ID'),
-    'shape-predictor': os.getenv('SHAPE_PREDICTOR_DRIVE_ID', 'YOUR_SHAPE_PREDICTOR_FILE_ID'),
-    'dlib-face-recognition': os.getenv('DLIB_FACE_RECOGNITION_DRIVE_ID', 'YOUR_DLIB_FACE_RECOGNITION_FILE_ID')
+    'anti-spoof': os.getenv('ANTISPOOF_MODEL_DRIVE_ID', 'YOUR_ANTISPOOF_MODEL_FILE_ID')
 }
-
 
 # Create models directory in temp
 MODELS_DIR = os.path.join(tempfile.gettempdir(), 'models')
@@ -117,8 +114,7 @@ def ensure_models_downloaded():
     """Download all required models from Google Drive if not already present"""
     model_files = {
         'yolov5s-face.onnx': GOOGLE_DRIVE_MODELS['yolov5s-face'],
-        'anti_spoofing/AntiSpoofing_bin_1.5_128.onnx': GOOGLE_DRIVE_MODELS['anti-spoof'],
-        'shape_predictor_68_face_landmarks.dat': GOOGLE_DRIVE_MODELS['shape-predictor']
+        'anti_spoofing/AntiSpoofing_bin_1.5_128.onnx': GOOGLE_DRIVE_MODELS['anti-spoof']
     }
     
     for filename, file_id in model_files.items():
@@ -132,35 +128,8 @@ def ensure_models_downloaded():
                 raise
 
 def download_and_extract_dlib_model():
-    """Download and extract dlib face recognition model"""
-    model_path = os.path.join(MODELS_DIR, 'dlib_face_recognition_resnet_model_v1.dat')
-    
-    if not os.path.exists(model_path):
-        if GOOGLE_DRIVE_MODELS.get('dlib-face-recognition'):
-            # Download from Google Drive
-            try:
-                download_from_google_drive(GOOGLE_DRIVE_MODELS['dlib-face-recognition'], model_path)
-                print("Dlib model downloaded from Google Drive successfully.")
-                return
-            except Exception as e:
-                print(f"Failed to download dlib model from Google Drive: {e}")
-                print("Falling back to direct download...")
-        
-        # Fallback to original download method
-        print("Downloading dlib_face_recognition_resnet_model_v1.dat.bz2...")
-        url = "http://dlib.net/files/dlib_face_recognition_resnet_model_v1.dat.bz2"
-        response = requests.get(url)
-        compressed_path = model_path + ".bz2"
-        
-        with open(compressed_path, 'wb') as f:
-            f.write(response.content)
-        
-        with bz2.BZ2File(compressed_path) as f_in:
-            with open(model_path, 'wb') as f_out:
-                f_out.write(f_in.read())
-        
-        os.remove(compressed_path)
-        print("Model downloaded and extracted successfully.")
+    """No longer needed with face_recognition library"""
+    pass
 
 # MongoDB Connection
 try:
@@ -461,17 +430,7 @@ yolo_face = YoloV5FaceDetector(YOLO_FACE_MODEL_PATH, input_size=640, conf_thresh
 anti_spoof_bin = AntiSpoofBinary(ANTI_SPOOF_BIN_MODEL_PATH, input_size=128, rgb=True, normalize=True, live_index=1)
 print("Models loaded successfully!")
 
-# ----------------------------- Dlib-based Recognition Pipeline (unchanged) -----------------------------
-
-SHAPE_PREDICTOR_PATH = os.path.join(MODELS_DIR, 'shape_predictor_68_face_landmarks.dat')
-FACE_RECOGNITION_MODEL_PATH = os.path.join(MODELS_DIR, 'dlib_face_recognition_resnet_model_v1.dat')
-
-# Load Dlib models once at startup
-detector = dlib.get_frontal_face_detector()
-shape_predictor = dlib.shape_predictor(SHAPE_PREDICTOR_PATH)
-face_recognition_model = dlib.face_recognition_model_v1(FACE_RECOGNITION_MODEL_PATH)
-
-# ... [Rest of your existing code remains exactly the same] ...
+# ----------------------------- Face Recognition Pipeline using face_recognition library -----------------------------
 
 def decode_image(base64_image):
     if ',' in base64_image:
@@ -481,43 +440,30 @@ def decode_image(base64_image):
     image = cv2.imdecode(np_array, cv2.IMREAD_COLOR)
     return image
 
-def align_face(image, shape):
-    """Align the face using eye landmarks"""
-    left_eye = (shape.part(36).x, shape.part(36).y)
-    right_eye = (shape.part(45).x, shape.part(45).y)
-
-    dx = right_eye[0] - left_eye[0]
-    dy = right_eye[1] - left_eye[1]
-    angle = np.degrees(np.arctan2(dy, dx))
-
-    eyes_center = ((left_eye[0] + right_eye[0]) // 2, (left_eye[1] + right_eye[1]) // 2)
-    M = cv2.getRotationMatrix2D(eyes_center, angle, 1.0)
-    aligned_image = cv2.warpAffine(image, M, (image.shape[1], image.shape[0]), flags=cv2.INTER_CUBIC)
-
-    return aligned_image
-
 def get_face_features(image):
-    """Extract aligned face features using ResNet model"""
-    rgb_img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    dets = detector(rgb_img, 1)
-
-    if len(dets) == 0:
+    """Extract face features using face_recognition library"""
+    try:
+        # Convert BGR to RGB
+        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        
+        # Find face locations
+        face_locations = face_recognition.face_locations(rgb_image)
+        
+        if len(face_locations) == 0:
+            return None
+        
+        # Get face encodings
+        face_encodings = face_recognition.face_encodings(rgb_image, face_locations)
+        
+        if len(face_encodings) == 0:
+            return None
+            
+        # Return the first face encoding
+        return face_encodings[0]
+        
+    except Exception as e:
+        print(f"Error in face feature extraction: {e}")
         return None
-
-    face = max(dets, key=lambda rect: rect.width() * rect.height())
-    shape = shape_predictor(rgb_img, face)
-
-    aligned_img = align_face(rgb_img, shape)
-    dets_aligned = detector(aligned_img, 1)
-
-    if len(dets_aligned) == 0:
-        return None
-
-    face_aligned = max(dets_aligned, key=lambda rect: rect.width() * rect.height())
-    shape_aligned = shape_predictor(aligned_img, face_aligned)
-
-    face_descriptor = face_recognition_model.compute_face_descriptor(aligned_img, shape_aligned)
-    return np.array(face_descriptor)
 
 def recognize_face(image, user_id, user_type='student'):
     """
@@ -550,7 +496,8 @@ def recognize_face(image, user_id, user_type='student'):
         if ref_features is None:
             return False, "No face detected in reference image"
 
-        dist = np.linalg.norm(features - ref_features)
+        # Calculate distance using face_recognition.face_distance
+        dist = face_recognition.face_distance([ref_features], features)[0]
         threshold = 0.6
 
         inference_time = time.time() - start_time
@@ -862,7 +809,7 @@ def face_login():
         if ref_features is None:
             continue
 
-        dist = np.linalg.norm(test_features - ref_features)
+        dist = face_recognition.face_distance([ref_features], test_features)[0]
         if dist < 0.6:
             session['logged_in'] = True
             session['user_type'] = face_role
@@ -915,7 +862,7 @@ def auto_face_login():
                 if ref_features is None:
                     continue
 
-                dist = np.linalg.norm(test_features - ref_features)
+                dist = face_recognition.face_distance([ref_features], test_features)[0]
                 if dist < 0.6: # Face recognized
                     session['logged_in'] = True
                     session['user_type'] = face_role
