@@ -24,19 +24,6 @@ false_rejects = 0
 unauthorized_attempts = 0
 inference_times = []
 
-# ------------- IP Restriction Settings -------------
-ALLOWED_IP = '127.0.0.1' # <--- SET YOUR ALLOWED IP HERE OR USE ENVIRONMENT VARIABLE
-
-def get_client_ip():
-    # Handles proxy headers if any (like when using nginx or cloud services)
-    if request.headers.get('X-Forwarded-For'):
-        ip = request.headers.get('X-Forwarded-For').split(',')[0]
-    else:
-        ip = request.remote_addr
-    return ip
-
-# ---------------------------------------------------
-
 # Load environment variables
 load_dotenv()
 
@@ -740,12 +727,6 @@ def metrics_dashboard():
 
 @app.route('/register', methods=['POST'])
 def register():
-    # IP Restriction for student registration - Allow from any IP on Render
-    allowed_ip = os.getenv('ALLOWED_IP', '127.0.0.1')
-    if allowed_ip != 'any' and get_client_ip() != allowed_ip:
-        flash('Registration is only allowed from authorized IP addresses.', 'danger')
-        return redirect(url_for('register_page'))
-
     try:
         student_data = {
             'student_id': request.form.get('student_id'),
@@ -788,12 +769,6 @@ def register():
 
 @app.route('/login', methods=['POST'])
 def login():
-    # IP Restriction for student login - Allow from any IP on Render
-    allowed_ip = os.getenv('ALLOWED_IP', '127.0.0.1')
-    if allowed_ip != 'any' and get_client_ip() != allowed_ip:
-        flash('Login is only allowed from authorized IP addresses.', 'danger')
-        return redirect(url_for('login_page'))
-
     student_id = request.form.get('student_id')
     password = request.form.get('password')
 
@@ -811,12 +786,6 @@ def login():
 
 @app.route('/face-login', methods=['POST'])
 def face_login():
-    # IP Restriction for face login - Allow from any IP on Render
-    allowed_ip = os.getenv('ALLOWED_IP', '127.0.0.1')
-    if allowed_ip != 'any' and get_client_ip() != allowed_ip:
-        flash('Face login is only allowed from authorized IP addresses.', 'danger')
-        return redirect(url_for('login_page'))
-
     face_image = request.form.get('face_image')
     face_role = request.form.get('face_role') # 'student' or 'teacher'
 
@@ -870,10 +839,6 @@ def face_login():
 @app.route('/auto-face-login', methods=['POST'])
 def auto_face_login():
     """Enhanced auto face login with role support"""
-    allowed_ip = os.getenv('ALLOWED_IP', '127.0.0.1')
-    if allowed_ip != 'any' and get_client_ip() != allowed_ip:
-        return jsonify({'success': False, 'message': 'Auto face login is only allowed from authorized IP addresses.'})
-
     try:
         data = request.json
         face_image = data.get('face_image')
@@ -960,11 +925,6 @@ def dashboard():
 
 @app.route('/mark-attendance', methods=['POST'])
 def mark_attendance():
-    # IP Restriction for student attendance marking - Allow from any IP on Render
-    allowed_ip = os.getenv('ALLOWED_IP', '127.0.0.1')
-    if allowed_ip != 'any' and get_client_ip() != allowed_ip:
-        return jsonify({'success': False, 'message': 'Attendance marking is only allowed from authorized IP addresses.'})
-
     if 'logged_in' not in session or session.get('user_type') != 'student':
         return jsonify({'success': False, 'message': 'Not logged in'})
 
@@ -978,7 +938,6 @@ def mark_attendance():
     if not all([student_id, program, semester, course, face_image]):
         return jsonify({'success': False, 'message': 'Missing required data'})
 
-    client_ip = get_client_ip()
     t0 = time.time()
 
     # Decode image
@@ -1004,7 +963,7 @@ def mark_attendance():
             distance=None,
             live_prob=None,
             latency_ms=round((time.time() - t0) * 1000.0, 2),
-            client_ip=client_ip,
+            client_ip=None,
             reason="no_face_detected"
         )
 
@@ -1028,7 +987,7 @@ def mark_attendance():
             distance=None,
             live_prob=None,
             latency_ms=round((time.time() - t0) * 1000.0, 2),
-            client_ip=client_ip,
+            client_ip=None,
             reason="failed_crop"
         )
 
@@ -1055,7 +1014,7 @@ def mark_attendance():
             distance=None,
             live_prob=float(live_prob),
             latency_ms=round((time.time() - t0) * 1000.0, 2),
-            client_ip=client_ip,
+            client_ip=None,
             reason="liveness_fail"
         )
 
@@ -1101,7 +1060,7 @@ def mark_attendance():
             distance=distance_val,
             live_prob=float(live_prob),
             latency_ms=total_latency_ms,
-            client_ip=client_ip,
+            client_ip=None,
             reason=None
         )
 
@@ -1145,7 +1104,7 @@ def mark_attendance():
                 distance=distance_val,
                 live_prob=float(live_prob),
                 latency_ms=total_latency_ms,
-                client_ip=client_ip,
+                client_ip=None,
                 reason=reason
             )
         else:
@@ -1158,7 +1117,7 @@ def mark_attendance():
                 distance=distance_val,
                 live_prob=float(live_prob),
                 latency_ms=total_latency_ms,
-                client_ip=client_ip,
+                client_ip=None,
                 reason=reason
             )
 
@@ -1166,11 +1125,6 @@ def mark_attendance():
 
 @app.route('/liveness-preview', methods=['POST'])
 def liveness_preview():
-    # Restrict to attendance use while logged in as student (same as attendance)
-    allowed_ip = os.getenv('ALLOWED_IP', '127.0.0.1')
-    if allowed_ip != 'any' and get_client_ip() != allowed_ip:
-        return jsonify({'success': False, 'message': 'Preview not allowed from this IP'})
-
     if 'logged_in' not in session or session.get('user_type') != 'student':
         return jsonify({'success': False, 'message': 'Not logged in'})
 
