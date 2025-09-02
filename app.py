@@ -1,59 +1,30 @@
 from flask import Flask, render_template, request, redirect, url_for, flash, session, jsonify
-
-from imutils.face_utils import FaceAligner, rect_to_bb # noqa: F401
-
 import onnxruntime as ort
-
-import imutils # noqa: F401
-
 import os
-
 import time
-
 import pymongo
-
 from pymongo import MongoClient
-
 from bson.binary import Binary
-
 import base64
-
 from datetime import datetime, timezone
-
 from dotenv import load_dotenv
-
 import numpy as np
-
-import face_recognition
-
 import cv2
-
 import bz2
-
 import requests
-
 from typing import Optional, Dict, Tuple, Any
-
 import tempfile
-
 import shutil
 
 # --- Evaluation Metrics Counters (legacy, kept for compatibility display) ---
-
 total_attempts = 0
-
 correct_recognitions = 0
-
 false_accepts = 0
-
 false_rejects = 0
-
 unauthorized_attempts = 0
-
 inference_times = []
 
 # ------------- IP Restriction Settings -------------
-
 ALLOWED_IP = '127.0.0.1' # <--- SET YOUR ALLOWED IP HERE OR USE ENVIRONMENT VARIABLE
 
 def get_client_ip():
@@ -127,10 +98,6 @@ def ensure_models_downloaded():
                 print(f"Error downloading {filename}: {e}")
                 raise
 
-def download_and_extract_dlib_model():
-    """No longer needed with face_recognition library"""
-    pass
-
 # MongoDB Connection
 try:
     mongo_uri = os.getenv('MONGO_URI', 'mongodb://localhost:27017/')
@@ -161,11 +128,9 @@ except Exception as e:
 print("Ensuring all models are downloaded...")
 try:
     ensure_models_downloaded()
-    download_and_extract_dlib_model()
     print("All models ready!")
 except Exception as e:
     print(f"Error setting up models: {e}")
-    # You might want to exit here or handle gracefully
     raise
 
 # ---------------- YOLOv5s-face + AntiSpoof (BINARY) FOR ATTENDANCE ONLY ----------------
@@ -246,7 +211,6 @@ class YoloV5FaceDetector:
         self.input_size = int(input_size)
         self.conf_threshold = float(conf_threshold)
         self.iou_threshold = float(iou_threshold)
-
         self.session = ort.InferenceSession(model_path, providers=_get_providers())
         self.input_name = self.session.get_inputs()[0].name
         self.output_names = [o.name for o in self.session.get_outputs()]
@@ -430,7 +394,7 @@ yolo_face = YoloV5FaceDetector(YOLO_FACE_MODEL_PATH, input_size=640, conf_thresh
 anti_spoof_bin = AntiSpoofBinary(ANTI_SPOOF_BIN_MODEL_PATH, input_size=128, rgb=True, normalize=True, live_index=1)
 print("Models loaded successfully!")
 
-# ----------------------------- Face Recognition Pipeline using face_recognition library -----------------------------
+# ----------------------------- OpenCV-based Face Recognition Pipeline -----------------------------
 
 def decode_image(base64_image):
     if ',' in base64_image:
@@ -440,42 +404,129 @@ def decode_image(base64_image):
     image = cv2.imdecode(np_array, cv2.IMREAD_COLOR)
     return image
 
-def get_face_features(image):
-    """Extract face features using face_recognition library"""
+def get_face_features_opencv(image):
+    """Extract face features using OpenCV and histogram comparison"""
     try:
-        # Convert BGR to RGB
+        # Convert to RGB for consistent processing
         rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         
-        # Find face locations
-        face_locations = face_recognition.face_locations(rgb_image)
+        # Use YOLO for face detection (more reliable than OpenCV Haar cascades)
+        detections = yolo_face.detect(image, max_det=1)
         
-        if len(face_locations) == 0:
-            return None
-        
-        # Get face encodings
-        face_encodings = face_recognition.face_encodings(rgb_image, face_locations)
-        
-        if len(face_encodings) == 0:
+        if not detections:
             return None
             
-        # Return the first face encoding
-        return face_encodings[0]
+        # Get the best detection
+        best_det = detections[0]
+        x1, y1, x2, y2 = [int(v) for v in best_det["bbox"]]
+        
+        # Extract face region
+        face_region = rgb_image[y1:y2, x1:x2]
+        
+        if face_region.size == 0:
+            return None
+            
+        # Resize to standard size for comparison
+        face_region = cv2.resize(face_region, (128, 128))
+        
+        # Extract multiple features for robust comparison
+        features = {}
+        
+        # 1. Histogram features (color distribution)
+        hist_b = cv2.calcHist([face_region], [0], None, [32], [0, 256])
+        hist_g = cv2.calcHist([face_region], [1], None, [32], [0, 256])
+        hist_r = cv2.calcHist([face_region], [2], None, [32], [0, 256])
+        features['hist'] = np.concatenate([hist_b.flatten(), hist_g.flatten(), hist_r.flatten()])
+        
+        # 2. LBP (Local Binary Patterns) for texture
+        gray_face = cv2.cvtColor(face_region, cv2.COLOR_RGB2GRAY)
+        
+        # Simple LBP implementation
+        lbp = np.zeros_like(gray_face, dtype=np.uint8)
+        for i in range(1, gray_face.shape[0] - 1):
+            for j in range(1, gray_face.shape[1] - 1):
+                center = gray_face[i, j]
+                binary_pattern = 0
+                binary_pattern |= (gray_face[i-1, j-1] >= center) << 0
+                binary_pattern |= (gray_face[i-1, j] >= center) << 1
+                binary_pattern |= (gray_face[i-1, j+1] >= center) << 2
+                binary_pattern |= (gray_face[i, j+1] >= center) << 3
+                binary_pattern |= (gray_face[i+1, j+1] >= center) << 4
+                binary_pattern |= (gray_face[i+1, j] >= center) << 5
+                binary_pattern |= (gray_face[i+1, j-1] >= center) << 6
+                binary_pattern |= (gray_face[i, j-1] >= center) << 7
+                lbp[i, j] = binary_pattern
+        
+        # LBP histogram
+        lbp_hist, _ = np.histogram(lbp.flatten(), bins=256, range=(0, 256))
+        features['lbp'] = lbp_hist
+        
+        # 3. Mean pixel values in different regions (simple geometric features)
+        h, w = face_region.shape[:2]
+        top_half = face_region[:h//2, :].mean(axis=(0, 1))
+        bottom_half = face_region[h//2:, :].mean(axis=(0, 1))
+        left_half = face_region[:, :w//2].mean(axis=(0, 1))
+        right_half = face_region[:, w//2:].mean(axis=(0, 1))
+        features['regions'] = np.concatenate([top_half, bottom_half, left_half, right_half])
+        
+        return features
         
     except Exception as e:
-        print(f"Error in face feature extraction: {e}")
+        print(f"Error in OpenCV face feature extraction: {e}")
         return None
+
+def calculate_face_distance(features1, features2):
+    """Calculate distance between two face feature sets"""
+    try:
+        if features1 is None or features2 is None:
+            return float('inf')
+        
+        # Weighted combination of different feature distances
+        distances = {}
+        
+        # Histogram distance (Bhattacharyya distance)
+        hist1 = features1['hist'] / (np.sum(features1['hist']) + 1e-7)
+        hist2 = features2['hist'] / (np.sum(features2['hist']) + 1e-7)
+        distances['hist'] = -np.log(np.sum(np.sqrt(hist1 * hist2)) + 1e-7)
+        
+        # LBP histogram distance
+        lbp1 = features1['lbp'] / (np.sum(features1['lbp']) + 1e-7)
+        lbp2 = features2['lbp'] / (np.sum(features2['lbp']) + 1e-7)
+        distances['lbp'] = -np.log(np.sum(np.sqrt(lbp1 * lbp2)) + 1e-7)
+        
+        # Regional features distance (Euclidean)
+        distances['regions'] = np.linalg.norm(features1['regions'] - features2['regions'])
+        
+        # Normalize distances to [0, 1] range and combine with weights
+        # Weights can be tuned based on which features work best for your use case
+        weights = {'hist': 0.4, 'lbp': 0.4, 'regions': 0.2}
+        
+        # Normalize to roughly [0, 1] range (these are empirically determined scaling factors)
+        normalized_distances = {
+            'hist': min(distances['hist'] / 2.0, 1.0),
+            'lbp': min(distances['lbp'] / 3.0, 1.0),
+            'regions': min(distances['regions'] / 100.0, 1.0)
+        }
+        
+        # Weighted average
+        final_distance = sum(weights[key] * normalized_distances[key] for key in weights)
+        
+        return final_distance
+        
+    except Exception as e:
+        print(f"Error calculating face distance: {e}")
+        return float('inf')
 
 def recognize_face(image, user_id, user_type='student'):
     """
-    Original verification-style recognition: compare only against the claimed user's reference.
-    Preserves legacy counters and messages to keep behavior consistent.
+    OpenCV-based face recognition for verification
     """
     global total_attempts, correct_recognitions, false_accepts, false_rejects, inference_times, unauthorized_attempts
 
     try:
         start_time = time.time()
 
-        features = get_face_features(image)
+        features = get_face_features_opencv(image)
         if features is None:
             return False, "No face detected"
 
@@ -492,13 +543,13 @@ def recognize_face(image, user_id, user_type='student'):
         ref_image_array = np.frombuffer(ref_image_bytes, np.uint8)
         ref_image = cv2.imdecode(ref_image_array, cv2.IMREAD_COLOR)
 
-        ref_features = get_face_features(ref_image)
+        ref_features = get_face_features_opencv(ref_image)
         if ref_features is None:
             return False, "No face detected in reference image"
 
-        # Calculate distance using face_recognition.face_distance
-        dist = face_recognition.face_distance([ref_features], features)[0]
-        threshold = 0.6
+        # Calculate distance using OpenCV-based method
+        dist = calculate_face_distance(ref_features, features)
+        threshold = 0.6  # Adjust this threshold based on your testing
 
         inference_time = time.time() - start_time
         inference_times.append(inference_time)
@@ -558,7 +609,6 @@ def log_metrics_event_normalized(
         "reason": reason,
         "decision": decision, # legacy-friendly field
     }
-
     log_metrics_event(doc)
 
 def classify_event(ev: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
@@ -604,10 +654,6 @@ def classify_event(ev: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
 def compute_metrics(limit: int = 10000):
     """
     Robust metrics aggregation that tolerates legacy docs.
-    - FAR = falseAccepts / impostorAttempts
-    - FRR = falseRejects / genuineAttempts
-    - Accuracy = (trueAccepts + trueRejects) / allAttempts
-    Unauthorized rejections (reject_true impostor) do not reduce accuracy; they contribute to trueRejects.
     """
     cursor = metrics_events.find({}, {"_id": 0}).sort("ts", -1).limit(limit)
 
@@ -795,7 +841,7 @@ def face_login():
 
     users = collection.find({'face_image': {'$exists': True, '$ne': None}})
 
-    test_features = get_face_features(image)
+    test_features = get_face_features_opencv(image)
     if test_features is None:
         flash('No face detected. Please try again.', 'danger')
         return redirect(url_for('login_page'))
@@ -805,11 +851,11 @@ def face_login():
         ref_image_array = np.frombuffer(ref_image_bytes, np.uint8)
         ref_image = cv2.imdecode(ref_image_array, cv2.IMREAD_COLOR)
 
-        ref_features = get_face_features(ref_image)
+        ref_features = get_face_features_opencv(ref_image)
         if ref_features is None:
             continue
 
-        dist = face_recognition.face_distance([ref_features], test_features)[0]
+        dist = calculate_face_distance(ref_features, test_features)
         if dist < 0.6:
             session['logged_in'] = True
             session['user_type'] = face_role
@@ -837,7 +883,7 @@ def auto_face_login():
             return jsonify({'success': False, 'message': 'No image received'})
 
         image = decode_image(face_image)
-        test_features = get_face_features(image)
+        test_features = get_face_features_opencv(image)
 
         if test_features is None:
             return jsonify({'success': False, 'message': 'No face detected'})
@@ -858,11 +904,11 @@ def auto_face_login():
                 ref_image_array = np.frombuffer(user['face_image'], np.uint8)
                 ref_image = cv2.imdecode(ref_image_array, cv2.IMREAD_COLOR)
 
-                ref_features = get_face_features(ref_image)
+                ref_features = get_face_features_opencv(ref_image)
                 if ref_features is None:
                     continue
 
-                dist = face_recognition.face_distance([ref_features], test_features)[0]
+                dist = calculate_face_distance(ref_features, test_features)
                 if dist < 0.6: # Face recognized
                     session['logged_in'] = True
                     session['user_type'] = face_role
@@ -1379,4 +1425,4 @@ def metrics_events_api():
     return jsonify(events)
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=True, host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
