@@ -1,4 +1,0 @@
-cmake==3.25.2
-wheel==0.40.0
-setuptools==67.8.0
-numpy==1.24.3
